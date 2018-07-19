@@ -1,0 +1,19 @@
+
+auth_listen_ip: 127.0.0.1
+auth_listen_port: 16100
+data_listen_ip: 127.0.0.1
+data_listen_port: 16101
+data_acquisition_server_ip: 127.0.0.1
+data_acquisition_server_port: 6100
+db_ip: *****
+db_port: *****
+db_name: *****
+db_user: *****
+db_password: *****
+svr_ca_file: ./resource/ca.crt
+svr_cert_file: ./resource/na.grih.gree.com.crt
+svr_key_file: ./resource/na.grih.gree.com.key
+svr_key_password: jb0-43gj5(*(&698*&%$90#6^%$04-3&%*99#xyTRW770%$*&^(UIDV*^&(&^%WF
+out_time: 20
+
+
