@@ -36,27 +36,12 @@ import (
 
 #define CHK_ERR(err,s) if ((err)==-1) { perror(s); exit(1); }
 #define CHK_SSL(err) if ((err)==-1) { ERR_print_errors_fp(stderr); exit(2); }
-
+#define MAXBUF 1024
 int err;
 SOCKET listen_sock;
 SSL_CTX* ctx;
 struct sockaddr_in sa_serv;
 struct sockaddr_in sa_cli;
-struct sockaddr_in chekport;  //检测端口
-
-int checkportstat(char *port){
-    SOCKET s = socket(AF_INET,SOCK_STREAM,IPPROTO_IP);
-	chekport.sin_family = AF_INET;
-	chekport.sin_port = htons(atoi(port));
-	chekport.sin_addr.s_addr = htonl(INADDR_ANY);
-	bind(s,(LPSOCKADDR)&chekport,sizeof(chekport));
-	closesocket(s);
-	if(WSAGetLastError()==WSAEADDRINUSE)
-	{
-		return -1;//端口已占用
-	}
-	return 1;
-}
 
 int init(char *ca_cert, char *server_cert, char *server_key, char *key_password) {
 	SSL_load_error_strings();            //为打印调试信息作准备
@@ -124,14 +109,13 @@ int init(char *ca_cert, char *server_cert, char *server_key, char *key_password)
 }
 
 int ssl_tls_listen(char *ip,char *port) {
-	//初始化网络环境，使用2.2版本scoket
+  //初始化网络环境，使用2.2版本scoket
 	WSADATA wsaData;
 	if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
 	{
 		printf("WSAStartup()fail:%d\n", GetLastError());
 		return -1;
 	}
-
 	//开始正常的TCP socket过程.................................
     //scoket套接字
 	if ((listen_sock = socket(AF_INET, SOCK_STREAM, 0))==-1)
@@ -161,12 +145,11 @@ int ssl_tls_listen(char *ip,char *port) {
 
 SSL* ssl_tls_accept(int *sd,int *flag)
 {
-	int sock;
 	SSL*  ssl;
-	int client_len = sizeof(sa_cli);
-	sock = (int)accept(listen_sock, (struct sockaddr*) &sa_cli, &client_len);
-	*sd = sock;
-	if(sock==-1)
+	int clientLen=sizeof(sa_cli);
+	memset(&sa_cli, 0, clientLen);
+	*sd =(int)accept(listen_sock, (struct sockaddr*) &sa_cli, &clientLen);
+	if(*sd==-1)
 	{
 	   ERR_print_errors_fp(stderr);
 		exit(1);
@@ -179,11 +162,12 @@ SSL* ssl_tls_accept(int *sd,int *flag)
 		return NULL;
 	}
 	//绑定读写套接字
-	SSL_set_fd(ssl, sock);
+	SSL_set_fd(ssl, *sd);
      //完成握手过程
 	if((*flag=SSL_accept(ssl))< 1)
 	{
 		ERR_print_errors_fp(stderr);
+		closesocket(*sd);
 	}
 	return ssl;
 }
@@ -209,15 +193,14 @@ char *get_cert_serial(SSL* ssl){
 	}
 	return NULL;
 }
-char buf[1024*10];
+char buf[MAXBUF + 1];
 char* read(SSL* ssl) {
-	err = SSL_read(ssl, buf, sizeof(buf));   //读取数据
+    memset(buf, '\0', sizeof(buf));
+	err = SSL_read(ssl, buf, MAXBUF);   //读取数据
 	if(err==-1)
 	{
 		return NULL;
 	}
-
-	//printf("Got %d chars:'%s'\n", err, buf);
 	return buf;
 }
 
@@ -229,20 +212,14 @@ int write(SSL* ssl,char *data) {
 void closeSSL(SSL* ssl,int sd){
 	SSL_shutdown(ssl);
 	SSL_free(ssl);
-	shutdown(sd,2);
 	closesocket(sd);
-	memset(buf, 0, sizeof(buf));
-
 }
 void closeSock(int sd){
-    shutdown(sd,2);
 	closesocket(sd);
-	memset(buf, 0, sizeof(buf));
-
-
 }
 void closeListenSock(){
 	closesocket(listen_sock);
+	SSL_CTX_free(ctx);
 }
 */
 import "C"
@@ -288,7 +265,8 @@ var (
 func init() {
 	var err error
 	if OutTimeLine, err = strconv.ParseInt(config.GetString("out_time"), 10, 64); err != nil {
-		OutTimeLine = 600
+		fmt.Println("out_time parse error:", err)
+		OutTimeLine = 15
 	}
 	initflag := C.init(C.CString(config.GetString("svr_ca_file")), C.CString(config.GetString("svr_cert_file")),
 		C.CString(config.GetString("svr_key_file")), C.CString(config.GetString("svr_key_password")))
@@ -315,7 +293,7 @@ func OutTimeStart() {
 			Mu.Lock()
 			Seconds++
 			Mu.Unlock()
-			if Seconds >= OutTimeLine { //超时时间.S
+			if Seconds > OutTimeLine { //超时时间.S
 				logs.Error("Overtime,prepare to make a restart signal...")
 				PID = os.Getpid()
 				process, _ := os.FindProcess(PID)
@@ -335,10 +313,8 @@ func AuthListener() {
 	} else {
 		logs.Error("Start TLS listen failed!")
 	}
-
 	for {
 		var sd, flag C.int
-		flag = 1
 		//阻塞等待连接
 		ssl := C.ssl_tls_accept(&sd, &flag)
 		fmt.Println("***********************************************")
@@ -423,7 +399,7 @@ func PackageHandle(ssl *C.SSL, sd C.int) {
 func ParesReq(data []byte) ([]byte, error) {
 	var reqPack Pack
 	err := json.Unmarshal(data, &reqPack)
-	if reqPack.T == "monitor" { //表明是监视包，不参与解析，直接返回
+	if reqPack.T == "monitor" { //表明是监视包
 		return nil, nil
 	}
 	if err != nil {
