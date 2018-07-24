@@ -11,7 +11,7 @@ pkg
 *.yaml
 *.crt
 *.key
+*.txt
 .vscode
 .bat
-
 debug
