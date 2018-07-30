@@ -8,10 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
-	"os"
 	"security"
-	"strconv"
-	"sync"
 	"time"
 
 	logs "github.com/alecthomas/log4go"
@@ -253,21 +250,9 @@ type DevInfo struct {
 }
 
 var PortStateFlag = make(chan int, 1)
-var (
-	Mu             sync.Mutex
-	Seconds        int64
-	AccpetOverFlag int
-	OutTimeLine    int64
-	PID            int
-)
 
 //初始化C代码，读取本地证书等操作
 func init() {
-	var err error
-	if OutTimeLine, err = strconv.ParseInt(config.GetString("out_time"), 10, 64); err != nil {
-		fmt.Println("out_time parse error:", err)
-		OutTimeLine = 15
-	}
 	initflag := C.init(C.CString(config.GetString("svr_ca_file")), C.CString(config.GetString("svr_cert_file")),
 		C.CString(config.GetString("svr_key_file")), C.CString(config.GetString("svr_key_password")))
 	if initflag == 1 {
@@ -280,28 +265,7 @@ func init() {
 
 //认证监听服务
 func AuthServiceStart() {
-	go AuthListener()
-	time.Sleep(1 * time.Second)
-	OutTimeStart()
-}
-
-func OutTimeStart() {
-	ticker := time.NewTicker(1 * time.Second) //15天 1296000  一周 604800  1天 86400
-	for {
-		select {
-		case <-ticker.C:
-			Mu.Lock()
-			Seconds++
-			Mu.Unlock()
-			if Seconds > OutTimeLine { //超时时间.S
-				logs.Error("Overtime,prepare to make a restart signal...")
-				PID = os.Getpid()
-				process, _ := os.FindProcess(PID)
-				process.Kill()
-				Seconds = 0
-			}
-		}
-	}
+	AuthListener()
 }
 
 //认证端口监听
@@ -319,13 +283,10 @@ func AuthListener() {
 		ssl := C.ssl_tls_accept(&sd, &flag)
 		fmt.Println("***********************************************")
 		if ssl == nil {
-			return
+			continue
 		} else {
 			switch flag {
 			case 1:
-				Mu.Lock()
-				Seconds = 0
-				Mu.Unlock()
 				logs.Info("AuthService-RemoteIP:" + C.GoString(C.get_client_ip()))
 				go PackageHandle(ssl, sd)
 			case 0:
