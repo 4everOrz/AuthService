@@ -227,6 +227,7 @@ void closeSSL(SSL* ssl,int sd){
 	SSL_free(ssl);
 	shutdown(sd,2);
 	closesocket(sd);
+	memset(&buf, '\0', sizeof(buf));
 }
 //关闭监听
 void closeListenSock(){
