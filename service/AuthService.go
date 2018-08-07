@@ -311,6 +311,7 @@ func AuthServiceStart() {
 			}
 		}
 	}
+	C.closeListenSock()
 }
 
 //处理数据包（核心函数）
