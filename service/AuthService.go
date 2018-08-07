@@ -1,16 +1,18 @@
 package service
 
 import (
+	"AuthService/common/config"
+	_ "AuthService/common/logs"
 	"AuthService/controllers"
 	"AuthService/models"
-	"AuthTest/common/config"
-	_ "AuthTest/common/logs"
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"unsafe"
+
+	//"os"
 	"security"
 	"time"
-	"unsafe"
 
 	logs "github.com/alecthomas/log4go"
 )
@@ -25,8 +27,6 @@ import (
 #include <errno.h>
 #include <sys/types.h>
 #include <winsock2.h>
-#include <Windows.h>
-#include "openssl/bio.h"
 #include "openssl/rsa.h"
 #include "openssl/crypto.h"
 #include "openssl/x509.h"
@@ -34,54 +34,81 @@ import (
 #include "openssl/ssl.h"
 #include "openssl/err.h"
 
-#define CHK_NULL(x) if ((x)==NULL) exit (1)
 #define CHK_ERR(err,s) if ((err)==-1) { perror(s); exit(1); }
 #define CHK_SSL(err) if ((err)==-1) { ERR_print_errors_fp(stderr); exit(2); }
 
-SOCKET svrsock;
-SSL_CTX *ctx;
-struct sockaddr_in my_addr;
-struct sockaddr_in their_addr;
+int err;
+SOCKET listen_sock;
+SSL_CTX* ctx;
+struct sockaddr_in sa_serv;
+struct sockaddr_in sa_cli;
 //ssl初始化
-int ssl_init(char *ca_cert, char *server_cert, char *server_key, char *key_password)
-{
-    SSL_library_init();
-    OpenSSL_add_all_algorithms();
-    SSL_load_error_strings();
-    ctx = SSL_CTX_new(SSLv23_server_method());
-  //ctx = SSL_CTX_new(TLSv1_2_server_method());
-    if (ctx == NULL) {
+int init(char *ca_cert, char *server_cert, char *server_key, char *key_password) {
+	SSL_load_error_strings();            //为打印调试信息作准备
+	OpenSSL_add_ssl_algorithms();        //初始化
+	OpenSSL_add_all_ciphers();           //支持的算法
+	OpenSSL_add_all_digests();
+	ERR_load_CRYPTO_strings();
 
-		return 0;
-    }
+	//创建ctx上下文，并指定采用什么协议(SSLv2/SSLv3/TLSv1)
+	ctx = SSL_CTX_new(SSLv23_server_method());
+	if(!ctx)
+	{
+		ERR_print_errors_fp(stderr);
+		exit(1);
+	}else
+	{
+		printf("make a new ctx ok!\n");
+	}
     //验证与否
 	SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER|SSL_VERIFY_FAIL_IF_NO_PEER_CERT, NULL);
 	//若验证,则放置CA证书
-	if(SSL_CTX_load_verify_locations(ctx, ca_cert, NULL)<=0)
-     {
+	if(SSL_CTX_load_verify_locations(ctx, ca_cert, "2")<=0)
+	{
 		SSL_CTX_free(ctx);
-         ERR_print_errors_fp(stderr);
-	     return 0;
-	}
-	else
+        ERR_print_errors_fp(stderr);
+		exit(1);
+	}else
 	{
 		printf("load ca_cert ok!\n");
 	}
-    if (SSL_CTX_use_certificate_file(ctx, server_cert, SSL_FILETYPE_PEM) <= 0) {
-       return 0;
-    }
-    SSL_CTX_set_default_passwd_cb_userdata(ctx, key_password);
-	if (SSL_CTX_use_PrivateKey_file(ctx, server_key, SSL_FILETYPE_PEM) <= 0){
-        return 0;
-    }
-    if (!SSL_CTX_check_private_key(ctx)) {
-        return 0;
+
+
+    //加载自己的证书文件
+	if (SSL_CTX_use_certificate_file(ctx, server_cert, SSL_FILETYPE_PEM) <= 0)
+	{
+       SSL_CTX_free(ctx);
+		ERR_print_errors_fp(stderr);
+		exit(1);
+	}else
+	{
+		printf("load server_cert ok!\n");
 	}
-	SSL_CTX_set_mode(ctx,SSL_MODE_AUTO_RETRY);
+
+    //加载自己的私钥,以用于签名
+	SSL_CTX_set_default_passwd_cb_userdata(ctx, key_password);
+	if (SSL_CTX_use_PrivateKey_file(ctx, server_key, SSL_FILETYPE_PEM) <= 0)
+	{
+		SSL_CTX_free(ctx);
+		ERR_print_errors_fp(stderr);
+		exit(1);
+	}else
+	{
+		printf("load server_key ok!\n");
+	}
+    //校验公私钥是否配对
+	if (!SSL_CTX_check_private_key(ctx)) {
+		SSL_CTX_free(ctx);
+		printf("Private key does not match the certificate public key/n");
+		exit(1);
+	}else
+	{
+		printf("check_private_key ok!\n");
+	}
 	return 1;
 }
-//开始监听
-int tls_listener(char *ip,char *port){
+//开启监听
+int ssl_tls_listen(char *ip,char *port) {
 	//初始化网络环境，使用2.2版本scoket
 	WSADATA wsaData;
 	if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
@@ -90,101 +117,121 @@ int tls_listener(char *ip,char *port){
 		return -1;
 	}
 
-    if ((svrsock = socket(AF_INET, SOCK_STREAM,IPPROTO_TCP)) == -1) {
-        perror("socket");
-        return 0;
-    }
+	//开始正常的TCP socket过程.................................
+    //scoket套接字
+	if ((listen_sock = socket(AF_INET, SOCK_STREAM, 0))==-1)
+	{
+	   ERR_print_errors_fp(stderr);
+	 	return -1;
+	}
+	memset(&sa_serv, 0, sizeof(sa_serv));
+	sa_serv.sin_family = AF_INET;
+	sa_serv.sin_addr.s_addr = inet_addr(ip);
+	sa_serv.sin_port = htons(atoi(port));
 
-    memset(&my_addr, 0,sizeof(my_addr));
-    my_addr.sin_family = AF_INET;
-    my_addr.sin_port = htons(atoi(port));
-    my_addr.sin_addr.s_addr  = inet_addr(ip);
+	if (bind(listen_sock, (struct sockaddr*) &sa_serv,sizeof(sa_serv))==-1)
+	{
+		ERR_print_errors_fp(stderr);
+		return -1;
+	}
 
-    if (bind(svrsock, (struct sockaddr *) &my_addr, sizeof(struct sockaddr))== -1) {
-        perror("bind");
-         return 0;
-    }
-
-    if (listen(svrsock, 5) == -1) {
-        perror("listen");
-        return 0;
-    }
-	ERR_remove_state(0);
-	ERR_free_strings();
-	CRYPTO_cleanup_all_ex_data();
+	//接受TCP链接
+	if(listen(listen_sock, 5)==-1)
+	{
+		ERR_print_errors_fp(stderr);
+		return -1;
+	}
 	return 1;
 }
-//接受客户端连接
-SSL* tls_accept(int *clisock){
-	SSL* ssl;
-	 memset(&their_addr, 0,sizeof(their_addr));
-     int len= sizeof(struct sockaddr);
-	if ((*clisock =(int)accept(svrsock, (struct sockaddr *) &their_addr,&len)) == -1){
-	    perror("accept");
-		return 0;
+//接受连接
+SSL* ssl_tls_accept(int *sd,int *flag)
+{
+	int sock;
+	SSL*  ssl;
+	int client_len = sizeof(sa_cli);
+	sock = (int)accept(listen_sock, (struct sockaddr*) &sa_cli, &client_len);
+	*sd = sock;
+	if(sock==-1)
+	{
+	   ERR_print_errors_fp(stderr);
+	   return NULL;
 	}
-    ssl = SSL_new(ctx);
-    SSL_set_fd(ssl, *clisock);
-	if (SSL_accept(ssl) == -1) {
-        perror("accept");
-        closesocket(*clisock);
-        return 0;
+	//TCP连接已建立,进行服务端的SSL过程.
+
+	//申请一个SSL套接字
+	if((ssl=SSL_new(ctx))==NULL)
+	{
+		closesocket(sock);
+		return NULL;
 	}
-	ERR_remove_state(0);
-	ERR_free_strings();
-	CRYPTO_cleanup_all_ex_data();
-    return ssl;
+	//绑定读写套接字
+	SSL_set_fd(ssl, sock);
+     //完成握手过程
+	if((*flag=SSL_accept(ssl))< 1)
+	{
+		ERR_print_errors_fp(stderr);
+		SSL_shutdown(ssl);
+	    SSL_free(ssl);
+	    shutdown(sock,2);
+	    closesocket(sock);
+		return NULL;
+	}
+	return ssl;
 }
 
-//接收数据
-char buf[1024];
-char* tls_read(SSL* ssl){
-	int len;
-    memset(buf, 0, sizeof(buf));
-    len = SSL_read(ssl, buf,sizeof(buf)-1);
-	if (len > 0)
-	{
-		printf("got:'%s'，byte:%d \n",buf, len);
-	}
-	buf[len]='\0';
-	return buf;
+char* get_client_ip() {
+   return inet_ntoa(sa_cli.sin_addr);
 }
-//发送数据
-int tls_write(SSL* ssl,char *data) {
-	int err = SSL_write(ssl, data, strlen(data));
-	return err;
+
+int get_client_port() {
+	return ntohs(sa_cli.sin_port);
 }
 //获取证书序列号
-char* get_cert_serial(SSL* ssl){
-	char *serial;
+char *serial;
+ASN1_INTEGER *asn1_i;
+char *get_cert_serial(SSL* ssl){
 	X509 *client_cert = SSL_get_peer_certificate(ssl);//从SSL结构中提取出对方的证书解析成X509结构.
 	if (client_cert != NULL) {
-		ASN1_INTEGER *asn1_i = X509_get_serialNumber(client_cert);
+		asn1_i = X509_get_serialNumber(client_cert);
 	    BIGNUM *bignum = ASN1_INTEGER_to_BN(asn1_i, NULL);
 		serial = BN_bn2hex(bignum);
-		BN_free(bignum);
-
-	}else{
-		printf("Client does not have certificate.\n");
+        BN_free(bignum);
+	    X509_free (client_cert);
+	    return serial;
 	}
-	X509_free (client_cert);
-	return serial;
+	else{
+		printf("Client does not have certificate.\n");
+		return NULL;
+	}
 }
-//关闭当前客户端连接
-void closeclisock(SSL* ssl,int clisock){
+//读取消息
+char buf[1024*10];
+char* read(SSL* ssl) {
+	err = SSL_read(ssl, buf, sizeof(buf));   //读取数据
+	if(err==-1)
+	{
+		return NULL;
+	}
+
+	//printf("Got %d chars:'%s'\n", err, buf);
+	return buf;
+}
+//写入消息
+int write(SSL* ssl,char *data) {
+	err = SSL_write(ssl, data, strlen(data));
+		return err;
+}
+//释放客户端连接资源
+void closeSSL(SSL* ssl,int sd){
 	SSL_shutdown(ssl);
 	SSL_free(ssl);
-	shutdown(clisock,2);
-	closesocket(clisock);
-	ERR_remove_state(0);
-	ERR_free_strings();
-    CRYPTO_cleanup_all_ex_data();
+	shutdown(sd,2);
+	closesocket(sd);
 }
-//结束监听
-void closesvrsock(){
-	closesocket(svrsock);
+//关闭监听
+void closeListenSock(){
 	SSL_CTX_free(ctx);
-    WSACleanup();
+	closesocket(listen_sock);
 }
 */
 import "C"
@@ -217,89 +264,94 @@ type DevInfo struct {
 	Ccode   string `json:"ccode"`
 }
 
+//初始化C代码，读取本地证书等操作
 func init() {
-	svr_ca_file := C.CString(config.GetString("svr_ca_file"))
-	svr_cert_file := C.CString(config.GetString("svr_cert_file"))
-	svr_key_file := C.CString(config.GetString("svr_key_file"))
-	svr_key_password := C.CString(config.GetString("svr_key_password"))
-
-	if C.ssl_init(svr_ca_file, svr_cert_file, svr_key_file, svr_key_password) == 1 {
-		fmt.Println("SSL_init ok!")
+	initflag := C.init(C.CString(config.GetString("svr_ca_file")), C.CString(config.GetString("svr_cert_file")),
+		C.CString(config.GetString("svr_key_file")), C.CString(config.GetString("svr_key_password")))
+	if initflag == 1 {
+		fmt.Println("C-code init ok!")
 	} else {
-		fmt.Println("SSL_init error!")
+		fmt.Println("C-code init failed!")
+		return
 	}
-	defer func() {
-		C.free(unsafe.Pointer(svr_ca_file))
-		C.free(unsafe.Pointer(svr_cert_file))
-		C.free(unsafe.Pointer(svr_key_file))
-		C.free(unsafe.Pointer(svr_key_password))
-	}()
 }
 
-//认证服务
+//认证监听服务
 func AuthServiceStart() {
-	auth_listen_ip := C.CString(config.GetString("auth_listen_ip"))
-	auth_listen_port := C.CString(config.GetString("auth_listen_port"))
-	defer func() {
-		C.free(unsafe.Pointer(auth_listen_ip))
-		C.free(unsafe.Pointer(auth_listen_port))
-	}()
 	//开启TLS监听
-	if C.tls_listener(auth_listen_ip, auth_listen_port) == 1 {
+	listenflag := C.ssl_tls_listen(C.CString(config.GetString("auth_listen_ip")), C.CString(config.GetString("auth_listen_port")))
+	if listenflag == 1 {
 		fmt.Println("AuthService listening...at port:", config.GetString("auth_listen_port"))
 	} else {
-		fmt.Println("AuthService listen  failed")
+		logs.Error("Start TLS listen failed!")
 	}
+
 	for {
-		var clisock C.int
-		ssl := C.tls_accept(&clisock)
-		if ssl != nil {
-			go PackageHandle(ssl, clisock)
+		var sd, flag C.int
+		flag = 1
+		//阻塞等待连接
+		ssl := C.ssl_tls_accept(&sd, &flag)
+		fmt.Println("***********************************************")
+		if ssl == nil {
+			continue
+		} else {
+			switch flag {
+			case 1:
+				logs.Info("AuthService-RemoteIP:" + C.GoString(C.get_client_ip()))
+				go PackageHandle(ssl, sd)
+				continue
+			case 0:
+				logs.Error("The Handshake failed and was closed exactly ")
+				C.closeSSL(ssl, sd)
+				continue
+			default:
+				logs.Error("The handshake failed because a fatal error occurred at the protocol layer or connection failure.")
+				C.closeSSL(ssl, sd)
+				continue
+			}
 		}
-		defer C.free(unsafe.Pointer(ssl))
 	}
-	C.closesvrsock()
 }
 
 //处理数据包（核心函数）
-func PackageHandle(ssl *C.SSL, clisock C.int) {
+func PackageHandle(ssl *C.SSL, sd C.int) {
 	var respData string
 	devInfo := DevInfo{}
-	receiveData := []byte(C.GoString(C.tls_read(ssl)))
+	receiveData := []byte(C.GoString(C.read(ssl)))
 	if receiveData != nil {
 		//解析Pack外包
 		devInfoByte, err := ParesReq(receiveData)
-
 		if err != nil {
 			logs.Error("Error on parse pack package:", err)
-			C.closeclisock(ssl, clisock)
+			C.closeSSL(ssl, sd)
 			return
 		}
 		//监控包不参与解析
 		if devInfoByte == nil {
 			logs.Info("Catched a Deamon package,will abandon it!")
-			C.closeclisock(ssl, clisock)
+			C.closeSSL(ssl, sd)
 			return
 		}
 		//解析devInfo包
 		logs.Info("devInfo_package:" + string(devInfoByte))
 		if err = json.Unmarshal(devInfoByte, &devInfo); err != nil {
 			logs.Error("Error on parse devInfo package:", err)
-			C.closeclisock(ssl, clisock)
+			C.closeSSL(ssl, sd)
 			return
 		}
 		//校验字段
 		if devInfo.Uuid == "" || devInfo.Mac == "" || devInfo.Licence == "" || devInfo.Ccode == "" {
 			logs.Error("Lose some necessary fields like Uuid,Mac...")
-			C.closeclisock(ssl, clisock)
+			C.closeSSL(ssl, sd)
 			return
 		}
 		//获取证书序列号
 		serialpt := C.get_cert_serial(ssl)
+		defer C.free(unsafe.Pointer(serialpt))
 		serial := C.GoString(serialpt)
 		if serial == "" {
 			logs.Error("No serial in Cert")
-			C.closeclisock(ssl, clisock)
+			C.closeSSL(ssl, sd)
 			return
 		} else {
 			logs.Info("SerialNumber:" + string(serial))
@@ -311,19 +363,14 @@ func PackageHandle(ssl *C.SSL, clisock C.int) {
 			respData = string(Packing(0, devInfo.Mac, devInfo.Uuid))
 		}
 		//返回答复包
-		ans := C.CString(respData)
-		if C.tls_write(ssl, ans) == -1 {
+		respDatapt := C.CString(respData)
+		defer C.free(unsafe.Pointer(respDatapt))
+		if C.write(ssl, respDatapt) == -1 {
 			logs.Error("Write scoket error!")
 		}
-		defer func() {
-			C.free(unsafe.Pointer(ans))
-			C.free(unsafe.Pointer(serialpt))
-		}()
-		C.closeclisock(ssl, clisock)
-
+		C.closeSSL(ssl, sd)
 	} else {
 		logs.Info("Connection is good,but no data!")
-		C.closeclisock(ssl, clisock)
 	}
 }
 
@@ -376,5 +423,3 @@ func (devInfo DevInfo) DevInfo2AuthController(serial string) controllers.AuthCon
 	}
 	return auth
 }
-
-/**/

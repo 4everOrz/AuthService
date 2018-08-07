@@ -2,7 +2,6 @@ package models
 
 import (
 	"AuthService/common/db"
-	"fmt"
 )
 
 //http://gorm.io/docs/
@@ -18,13 +17,14 @@ type DevCertSerialInfo struct {
 	Flag    int    `gorm:"type:tinyint(2);null;"`
 }
 
+/*
 func init() {
 	if !db.Orm.HasTable(&DevCertSerialInfo{}) {
 		if err := db.Orm.Set("gorm:DevCertSerialInfo", "ENGINE=InnoDB DEFAULT CHARSET=utf8").CreateTable(&DevCertSerialInfo{}).Error; err != nil {
 			fmt.Println("Create table failed,error:" + err.Error())
 		}
 	}
-}
+}*/
 
 //添加一条记录
 func (devcertserialInfo *DevCertSerialInfo) Create() error {
