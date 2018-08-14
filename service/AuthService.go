@@ -105,6 +105,8 @@ int init(char *ca_cert, char *server_cert, char *server_key, char *key_password)
 	{
 		printf("check_private_key ok!\n");
 	}
+	//处理握手多次
+	SSL_CTX_set_mode(ctx, SSL_MODE_AUTO_RETRY);
 	return 1;
 }
 //开启监听
@@ -167,15 +169,7 @@ SSL* ssl_tls_accept(int *sd,int *flag)
 	//绑定读写套接字
 	SSL_set_fd(ssl, sock);
      //完成握手过程
-	if((*flag=SSL_accept(ssl))< 1)
-	{
-		ERR_print_errors_fp(stderr);
-		SSL_shutdown(ssl);
-	    SSL_free(ssl);
-	    shutdown(sock,2);
-	    closesocket(sock);
-		return NULL;
-	}
+	*flag=SSL_accept(ssl);
 	return ssl;
 }
 
