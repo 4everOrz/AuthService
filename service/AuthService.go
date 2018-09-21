@@ -343,7 +343,7 @@ func PackageHandle(ssl *C.SSL, sd C.int) {
 		}
 		//获取证书序列号
 		serialpt := C.get_cert_serial(ssl)
-		//defer C.free(unsafe.Pointer(serialpt))
+		defer C.free(unsafe.Pointer(serialpt))
 		serial := C.GoString(serialpt)
 		if serial == "" {
 			logs.Error("No serial in Cert")
